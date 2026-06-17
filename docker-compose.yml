@@ -3,8 +3,10 @@ services:
     image: ${REGISTRY}/app:1.0
     deploy:
       mode: global
-    dns:
-      - ${DNS_SERVER}
+    ports:
+      - 9000:9000
+    volumes:
+      - /etc/hosts:/etc/hosts:ro
     environment:
       - NODE_HOSTNAME={{.Node.Hostname}}
       - NODO_1=${NODO_1}
