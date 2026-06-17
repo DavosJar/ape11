@@ -11,7 +11,6 @@ registry:
 
 label:
 	docker node update --label-add node_id=1 $(NODO_1)
-	docker node update --label-add node_id=2 $(NODO_2)
 
 
 token:
@@ -22,14 +21,24 @@ build:
 	docker push $(REGISTRY)/app:1.0
 
 deploy:
-	docker stack deploy -c docker-compose.yml cluster
+	docker service create \
+		--name cluster_app \
+		--mode global \
+		--network host \
+		--env NODE_HOSTNAME="{{.Node.Hostname}}" \
+		--env NODO_1=$(NODO_1) \
+		--env NODO_2=$(NODO_2) \
+		--env NODO_3=$(NODO_3) \
+		--env NODO_4=$(NODO_4) \
+		--env NODO_5=$(NODO_5) \
+		$(REGISTRY)/app:1.0
 
 master: swarm-init registry label build deploy
 
 redeploy:
 	docker build -t $(REGISTRY)/app:1.0 .
 	docker push $(REGISTRY)/app:1.0
-	docker stack deploy -c docker-compose.yml cluster
+	docker service update --force cluster_app
 
 # =================== WORKER ===================
 
@@ -43,6 +52,9 @@ worker-join:
 worker: worker-registry worker-join
 
 # =================== UTILS ===================
+
+clean-service:
+	docker service rm cluster_app || true
 
 status:
 	docker node ls

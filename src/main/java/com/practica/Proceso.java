@@ -15,6 +15,7 @@ public class Proceso {
 
     private AtomicBoolean eleccionEnCurso = new AtomicBoolean(false);
     private AtomicBoolean respuestaRecibida = new AtomicBoolean(false);
+    private int coordinadorActual = -1;
 
     public Proceso(int id, Map<Integer, String> nodos) {
         this.id = id;
@@ -26,7 +27,22 @@ public class Proceso {
     public void iniciar() {
         new Thread(this::escuchar).start();
         try { Thread.sleep(500); } catch (InterruptedException e) {}
-        iniciarEleccion();
+        
+        // Si soy el de mayor ID, directo soy coordinador
+        if (esElMayor()) {
+            declararCoordinador();
+        } else {
+            new Thread(this::iniciarEleccion).start();
+        }
+        
+        new Thread(this::heartbeat).start();
+    }
+
+    private boolean esElMayor() {
+        for (int i = id + 1; i <= nodos.size(); i++) {
+            if (nodos.containsKey(i)) return false;
+        }
+        return true;
     }
 
     private void escuchar() {
@@ -43,6 +59,35 @@ public class Proceso {
             }
         } catch (IOException e) {
             System.err.println("[" + id + "] error: " + e.getMessage());
+        }
+    }
+
+    private void heartbeat() {
+        while (activo) {
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException e) {
+                break;
+            }
+            
+            if (coordinadorActual != -1 && coordinadorActual != id) {
+                String host = nodos.get(coordinadorActual);
+                if (host == null) continue;
+                
+                try {
+                    Socket s = new Socket();
+                    s.connect(new InetSocketAddress(host, PUERTO), 3000);
+                    PrintWriter out = new PrintWriter(s.getOutputStream(), true);
+                    out.println("PING|" + id + "|" + coordinadorActual);
+                    s.close();
+                } catch (IOException e) {
+                    System.out.println("[" + id + "] coordinador " + coordinadorActual + " no responde");
+                    coordinadorActual = -1;
+                    if (!eleccionEnCurso.get()) {
+                        new Thread(this::iniciarEleccion).start();
+                    }
+                }
+            }
         }
     }
 
@@ -74,8 +119,11 @@ public class Proceso {
                 break;
             case "COORDINATOR":
                 esCoordinador = false;
+                coordinadorActual = msg.getEmisor();
                 System.out.println("[" + id + "] coordinador es nodo " + msg.getEmisor());
                 eleccionEnCurso.set(false);
+                break;
+            case "PING":
                 break;
         }
     }
@@ -88,8 +136,17 @@ public class Proceso {
         int mayores = 0;
         for (int i = id + 1; i <= nodos.size(); i++) {
             if (nodos.containsKey(i)) {
-                enviarMensaje("ELECTION", i);
-                mayores++;
+                // Conectar con timeout corto para no esperar
+                try {
+                    Socket s = new Socket();
+                    s.connect(new InetSocketAddress(nodos.get(i), PUERTO), 1000);
+                    PrintWriter out = new PrintWriter(s.getOutputStream(), true);
+                    out.println(new Message("ELECTION", this.id, i).serializar());
+                    s.close();
+                    mayores++;
+                } catch (IOException e) {
+                    System.out.println("[" + id + "] nodo " + i + " no responde");
+                }
             }
         }
 
@@ -98,6 +155,7 @@ public class Proceso {
             return;
         }
 
+        // Esperar respuestas de los nodos superiores
         try { Thread.sleep(2000); } catch (InterruptedException e) {}
 
         if (!respuestaRecibida.get()) {
@@ -108,6 +166,7 @@ public class Proceso {
 
     private void declararCoordinador() {
         esCoordinador = true;
+        coordinadorActual = id;
         System.out.println("[" + id + "] SOY EL COORDINADOR");
         for (int i = 1; i < id; i++) {
             if (nodos.containsKey(i)) {
