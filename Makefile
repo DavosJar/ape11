@@ -38,7 +38,16 @@ master: swarm-init registry label build deploy
 redeploy:
 	docker build -t $(REGISTRY)/app:1.0 .
 	docker push $(REGISTRY)/app:1.0
-	docker service update --force cluster_app
+	docker service rm cluster_app 2>/dev/null || true
+	sleep 3
+	docker service create \
+		--name cluster_app \
+		--mode global \
+		--network host \
+		--env NODE_HOSTNAME="{{.Node.Hostname}}" \
+		--env NODO_1=$(NODO_1) \
+		--env NODO_2=$(NODO_2) \
+		$(REGISTRY)/app:1.0
 
 # =================== WORKER ===================
 
@@ -54,7 +63,8 @@ worker: worker-registry worker-join
 # =================== UTILS ===================
 
 clean-service:
-	docker service rm cluster_app || true
+	docker service rm cluster_app 2>/dev/null || true
+	sleep 3
 
 status:
 	docker node ls

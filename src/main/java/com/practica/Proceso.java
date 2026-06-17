@@ -28,7 +28,6 @@ public class Proceso {
         new Thread(this::escuchar).start();
         try { Thread.sleep(500); } catch (InterruptedException e) {}
         
-        // Si soy el de mayor ID, directo soy coordinador
         if (esElMayor()) {
             declararCoordinador();
         } else {
@@ -70,7 +69,15 @@ public class Proceso {
                 break;
             }
             
-            if (coordinadorActual != -1 && coordinadorActual != id) {
+            if (esCoordinador) {
+                // Anunciarse a TODOS los nodos periodicamente
+                // Asi si alguien se reconecta, sabe quien manda
+                for (int i = 1; i <= nodos.size(); i++) {
+                    if (i != id && nodos.containsKey(i)) {
+                        enviarMensaje("COORDINATOR", i);
+                    }
+                }
+            } else if (coordinadorActual != -1 && coordinadorActual != id) {
                 String host = nodos.get(coordinadorActual);
                 if (host == null) continue;
                 
@@ -122,6 +129,12 @@ public class Proceso {
                 coordinadorActual = msg.getEmisor();
                 System.out.println("[" + id + "] coordinador es nodo " + msg.getEmisor());
                 eleccionEnCurso.set(false);
+                
+                // Si el coordinador tiene menor ID que yo, deberia ganar yo
+                // Inicio eleccion para destronarlo
+                if (msg.getEmisor() < id && !eleccionEnCurso.get()) {
+                    new Thread(this::iniciarEleccion).start();
+                }
                 break;
             case "PING":
                 break;
@@ -136,7 +149,6 @@ public class Proceso {
         int mayores = 0;
         for (int i = id + 1; i <= nodos.size(); i++) {
             if (nodos.containsKey(i)) {
-                // Conectar con timeout corto para no esperar
                 try {
                     Socket s = new Socket();
                     s.connect(new InetSocketAddress(nodos.get(i), PUERTO), 1000);
@@ -155,7 +167,6 @@ public class Proceso {
             return;
         }
 
-        // Esperar respuestas de los nodos superiores
         try { Thread.sleep(2000); } catch (InterruptedException e) {}
 
         if (!respuestaRecibida.get()) {
@@ -168,8 +179,8 @@ public class Proceso {
         esCoordinador = true;
         coordinadorActual = id;
         System.out.println("[" + id + "] SOY EL COORDINADOR");
-        for (int i = 1; i < id; i++) {
-            if (nodos.containsKey(i)) {
+        for (int i = 1; i <= nodos.size(); i++) {
+            if (i != id && nodos.containsKey(i)) {
                 enviarMensaje("COORDINATOR", i);
             }
         }
