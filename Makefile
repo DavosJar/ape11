@@ -11,6 +11,7 @@ registry:
 
 label:
 	docker node update --label-add node_id=1 $(NODO_1)
+	docker node update --label-add node_id=2 $(NODO_2)
 
 
 token:
