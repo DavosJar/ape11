@@ -49,6 +49,22 @@ redeploy:
 		--env NODO_2=$(NODO_2) \
 		$(REGISTRY)/app:1.0
 
+# =================== SIMULACION LOCAL ===================
+
+deploy_sim:
+	docker compose -f docker-compose.dev.yml build -q
+	docker compose -f docker-compose.dev.yml up -d
+	@echo "5 procesos desplegados. Usa 'make logs_sim' para ver logs"
+
+logs_sim:
+	docker compose -f docker-compose.dev.yml logs -f
+
+stop_sim:
+	docker compose -f docker-compose.dev.yml down
+
+status_sim:
+	docker compose -f docker-compose.dev.yml ps
+
 # =================== WORKER ===================
 
 worker-registry:

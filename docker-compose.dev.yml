@@ -1,0 +1,74 @@
+services:
+  p1:
+    build: .
+    image: localhost:5000/app:1.0
+    environment:
+      NODE_ID: 1
+      NODO_1: p1
+      NODO_2: p2
+      NODO_3: p3
+      NODO_4: p4
+      NODO_5: p5
+    networks:
+      - bully-net
+    restart: unless-stopped
+
+  p2:
+    build: .
+    image: localhost:5000/app:1.0
+    environment:
+      NODE_ID: 2
+      NODO_1: p1
+      NODO_2: p2
+      NODO_3: p3
+      NODO_4: p4
+      NODO_5: p5
+    networks:
+      - bully-net
+    restart: unless-stopped
+
+  p3:
+    build: .
+    image: localhost:5000/app:1.0
+    environment:
+      NODE_ID: 3
+      NODO_1: p1
+      NODO_2: p2
+      NODO_3: p3
+      NODO_4: p4
+      NODO_5: p5
+    networks:
+      - bully-net
+    restart: unless-stopped
+
+  p4:
+    build: .
+    image: localhost:5000/app:1.0
+    environment:
+      NODE_ID: 4
+      NODO_1: p1
+      NODO_2: p2
+      NODO_3: p3
+      NODO_4: p4
+      NODO_5: p5
+    networks:
+      - bully-net
+    restart: unless-stopped
+
+  p5:
+    build: .
+    image: localhost:5000/app:1.0
+    environment:
+      NODE_ID: 5
+      NODO_1: p1
+      NODO_2: p2
+      NODO_3: p3
+      NODO_4: p4
+      NODO_5: p5
+    networks:
+      - bully-net
+    restart: unless-stopped
+
+networks:
+  bully-net:
+    driver: bridge
