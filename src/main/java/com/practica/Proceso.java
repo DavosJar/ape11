@@ -1,53 +1,68 @@
 package com.practica;
 
-import java.io.*;
-import java.net.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Proceso {
-    private int id;
-    private boolean activo;
-    private boolean esCoordinador;
-    private Map<Integer, String> nodos;
     private static final int PUERTO = 9000;
-    public static int totalMensajes = 0;
+    private static final long GRACIA_INICIO = 2500;
 
-    private AtomicBoolean eleccionEnCurso = new AtomicBoolean(false);
-    private AtomicBoolean respuestaRecibida = new AtomicBoolean(false);
-    private int coordinadorActual = -1;
+    private final EstadoProceso estado;
+    private final ElectionManager electionManager;
+    private final HeartbeatManager heartbeatManager;
+    private final ConsensoManager consensoManager;
 
     public Proceso(int id, Map<Integer, String> nodos) {
-        this.id = id;
-        this.activo = true;
-        this.esCoordinador = false;
-        this.nodos = nodos;
+        this.estado = new EstadoProceso(id, nodos);
+        this.electionManager = new ElectionManager(estado, this::enviarMensaje);
+        this.heartbeatManager = new HeartbeatManager(estado, this::enviarMensaje, electionManager);
+        this.consensoManager = new ConsensoManager(estado, this::enviarMensaje);
     }
 
     public void iniciar() {
         new Thread(this::escuchar).start();
-        try { Thread.sleep(500); } catch (InterruptedException e) {}
-        
-        if (esElMayor()) {
-            declararCoordinador();
-        } else {
-            new Thread(this::iniciarEleccion).start();
+        // Wait for server socket to bind
+        try { Thread.sleep(500); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        
-        new Thread(this::heartbeat).start();
-    }
 
-    private boolean esElMayor() {
-        for (int i = id + 1; i <= nodos.size(); i++) {
-            if (nodos.containsKey(i)) return false;
+        // Startup grace period: let other nodes boot before starting elections
+        try { Thread.sleep(GRACIA_INICIO); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        return true;
+
+        // After grace period, check if someone already declared as coordinator
+        if (estado.getCoordinadorActual() != -1) {
+            // Already have a coordinator — do nothing
+        } else if (electionManager.esElMayor()) {
+            electionManager.declararCoordinador();
+        } else {
+            new Thread(electionManager::iniciarEleccion).start();
+        }
+
+        // Start heartbeat loop
+        new Thread(() -> {
+            while (estado.isActivo()) {
+                heartbeatManager.run();
+            }
+        }).start();
+
+        // Start consensus rounds (only coordinator actually runs them)
+        new Thread(() -> {
+            try { Thread.sleep(5000); } catch (InterruptedException e) {}
+            consensoManager.ejecutarTodasLasRondas();
+        }).start();
     }
 
     private void escuchar() {
         try (ServerSocket ss = new ServerSocket(PUERTO)) {
-            System.out.println("[" + id + "] escuchando en puerto " + PUERTO);
-            while (activo) {
+            System.out.println("[" + estado.getId() + "] escuchando en puerto " + PUERTO);
+            while (estado.isActivo()) {
                 Socket socket = ss.accept();
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                 String linea = in.readLine();
@@ -57,143 +72,58 @@ public class Proceso {
                 socket.close();
             }
         } catch (IOException e) {
-            System.err.println("[" + id + "] error: " + e.getMessage());
-        }
-    }
-
-    private void heartbeat() {
-        while (activo) {
-            try {
-                Thread.sleep(5000);
-            } catch (InterruptedException e) {
-                break;
-            }
-            
-            if (esCoordinador) {
-                // Anunciarse a TODOS los nodos periodicamente
-                // Asi si alguien se reconecta, sabe quien manda
-                for (int i = 1; i <= nodos.size(); i++) {
-                    if (i != id && nodos.containsKey(i)) {
-                        enviarMensaje("COORDINATOR", i);
-                    }
-                }
-            } else if (coordinadorActual != -1 && coordinadorActual != id) {
-                String host = nodos.get(coordinadorActual);
-                if (host == null) continue;
-                
-                try {
-                    Socket s = new Socket();
-                    s.connect(new InetSocketAddress(host, PUERTO), 3000);
-                    PrintWriter out = new PrintWriter(s.getOutputStream(), true);
-                    out.println("PING|" + id + "|" + coordinadorActual);
-                    s.close();
-                } catch (IOException e) {
-                    System.out.println("[" + id + "] coordinador " + coordinadorActual + " no responde");
-                    coordinadorActual = -1;
-                    if (!eleccionEnCurso.get()) {
-                        new Thread(this::iniciarEleccion).start();
-                    }
-                }
-            }
-        }
-    }
-
-    public void enviarMensaje(String tipo, int receptor) {
-        Message msg = new Message(tipo, this.id, receptor);
-        String host = nodos.get(receptor);
-        if (host == null) return;
-        try (Socket socket = new Socket(host, PUERTO);
-             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
-            out.println(msg.serializar());
-            totalMensajes++;
-            System.out.println("  " + msg);
-        } catch (IOException e) {
-            System.out.println("[" + id + "] nodo " + receptor + " no responde");
+            System.err.println("[" + estado.getId() + "] error: " + e.getMessage());
         }
     }
 
     private void procesarMensaje(Message msg) {
-        System.out.println("[" + id + "] recibi: " + msg);
+        // Log receipts except PING (avoid noise)
+        if (!MessageType.PING.equals(msg.getTipo())) {
+            System.out.println("[" + estado.getId() + "] recibi: " + msg);
+        }
+
         switch (msg.getTipo()) {
-            case "ELECTION":
-                enviarMensaje("OK", msg.getEmisor());
-                if (!eleccionEnCurso.get()) {
-                    new Thread(this::iniciarEleccion).start();
-                }
+            case MessageType.ELECTION:
+                electionManager.procesarELECTION(msg.getEmisor());
                 break;
-            case "OK":
-                respuestaRecibida.set(true);
+            case MessageType.OK:
+                electionManager.procesarOK();
                 break;
-            case "COORDINATOR":
-                esCoordinador = false;
-                coordinadorActual = msg.getEmisor();
-                System.out.println("[" + id + "] coordinador es nodo " + msg.getEmisor());
-                eleccionEnCurso.set(false);
-                
-                // Si el coordinador tiene menor ID que yo, deberia ganar yo
-                // Inicio eleccion para destronarlo
-                if (msg.getEmisor() < id && !eleccionEnCurso.get()) {
-                    new Thread(this::iniciarEleccion).start();
-                }
+            case MessageType.COORDINATOR:
+                electionManager.procesarCOORDINATOR(msg.getEmisor());
                 break;
-            case "PING":
+            case MessageType.ACK:
+                electionManager.procesarACK(msg.getEmisor());
+                break;
+            case MessageType.PING:
+                electionManager.procesarPING(msg.getEmisor());
+                break;
+            case MessageType.VOTE_REQUEST:
+                consensoManager.procesarVOTE_REQUEST(msg.getEmisor(), Integer.parseInt(msg.getContenido()));
+                break;
+            case MessageType.VOTE_SI:
+            case MessageType.VOTE_NO:
+                consensoManager.procesarVOTO(msg.getEmisor(), msg.getTipo());
+                break;
+            case MessageType.DECISION_SI:
+            case MessageType.DECISION_NO:
+                consensoManager.procesarDECISION(msg.getEmisor(), msg.getTipo());
                 break;
         }
     }
 
-    public void iniciarEleccion() {
-        System.out.println("[" + id + "] iniciando eleccion");
-        eleccionEnCurso.set(true);
-        respuestaRecibida.set(false);
-
-        int mayores = 0;
-        for (int i = id + 1; i <= nodos.size(); i++) {
-            if (nodos.containsKey(i)) {
-                try {
-                    Socket s = new Socket();
-                    s.connect(new InetSocketAddress(nodos.get(i), PUERTO), 1000);
-                    PrintWriter out = new PrintWriter(s.getOutputStream(), true);
-                    out.println(new Message("ELECTION", this.id, i).serializar());
-                    s.close();
-                    mayores++;
-                } catch (IOException e) {
-                    System.out.println("[" + id + "] nodo " + i + " no responde");
-                }
+    private void enviarMensaje(Message msg) {
+        String host = estado.getNodos().get(msg.getReceptor());
+        if (host == null) return;
+        try (Socket socket = new Socket(host, PUERTO);
+             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+            out.println(msg.serializar());
+            // Log sends except PING and routine COORDINATOR
+            if (!MessageType.PING.equals(msg.getTipo()) && !MessageType.COORDINATOR.equals(msg.getTipo())) {
+                System.out.println("  " + msg);
             }
+        } catch (IOException e) {
+            System.out.println("[" + estado.getId() + "] nodo " + msg.getReceptor() + " no responde");
         }
-
-        if (mayores == 0) {
-            declararCoordinador();
-            return;
-        }
-
-        try { Thread.sleep(2000); } catch (InterruptedException e) {}
-
-        if (!respuestaRecibida.get()) {
-            declararCoordinador();
-        }
-        eleccionEnCurso.set(false);
-    }
-
-    private void declararCoordinador() {
-        esCoordinador = true;
-        coordinadorActual = id;
-        System.out.println("[" + id + "] SOY EL COORDINADOR");
-        for (int i = 1; i <= nodos.size(); i++) {
-            if (i != id && nodos.containsKey(i)) {
-                enviarMensaje("COORDINATOR", i);
-            }
-        }
-    }
-
-    public int getId()                        { return id; }
-    public boolean isActivo()                 { return activo; }
-    public boolean isCoordinador()            { return esCoordinador; }
-    public void setActivo(boolean activo)     { this.activo = activo; }
-    public void setCoordinador(boolean value) { this.esCoordinador = value; }
-
-    @Override
-    public String toString() {
-        return "Proceso[id=" + id + ", activo=" + activo + ", coordinador=" + esCoordinador + "]";
     }
 }

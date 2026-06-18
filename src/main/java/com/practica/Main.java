@@ -31,7 +31,7 @@ public class Main {
         System.out.println("Nodo " + nodeId + " iniciado");
         System.out.println("Nodos: " + nodos);
 
-        Proceso p = new Proceso(nodeId, nodos);
-        p.iniciar();
+        Proceso proceso = new Proceso(nodeId, nodos);
+        proceso.iniciar();
     }
 }
