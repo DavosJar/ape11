@@ -67,7 +67,6 @@ public class ElectionManager {
     public void procesarELECTION(int emisor) {
         enviarMensaje(MessageType.OK, emisor);
         if (estado.isEsCoordinador()) {
-            // I'm already the coordinator — tell them, don't start a new election
             enviarMensaje(MessageType.COORDINATOR, emisor);
         } else if (!estado.getEleccionEnCurso().get()) {
             new Thread(this::iniciarEleccion).start();
@@ -79,7 +78,6 @@ public class ElectionManager {
     }
 
     public void procesarCOORDINATOR(int emisor) {
-        // If we're already the coordinator and a lower node claims it, just re-assert
         if (estado.isEsCoordinador() && emisor < estado.getId()) {
             enviarMensaje(MessageType.COORDINATOR, emisor);
             return;
@@ -93,16 +91,13 @@ public class ElectionManager {
         estado.setCoordinadorActual(emisor);
         estado.getEleccionEnCurso().set(false);
 
-        // Send ACK to coordinator (first time only for this coordinator)
         if (!estado.getYaAckAlCoordinador().getAndSet(true)) {
             enviarMensaje(MessageType.ACK, emisor);
         }
 
         if (emisor > estado.getId()) {
-            // Higher node is legit coordinator — stop any pending election
             estado.getRespuestaRecibida().set(true);
         } else if (emisor < estado.getId() && !estado.getEleccionEnCurso().get()) {
-            // Lower node claims to be coordinator — challenge
             new Thread(this::iniciarEleccion).start();
         }
     }
@@ -115,7 +110,6 @@ public class ElectionManager {
 
     public void procesarPING(int emisor) {
         if (estado.isEsCoordinador()) {
-            // Treat PING as implicit acknowledgment that this node knows I'm coordinator
             if (estado.getAcknowledgedNodes().add(emisor)) {
                 System.out.println("[" + estado.getId() + "] nodo " + emisor + " acknowledged (PING)");
                 checkAllAcknowledged();

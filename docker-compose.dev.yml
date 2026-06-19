@@ -4,6 +4,7 @@ services:
     image: localhost:5000/app:1.0
     environment:
       NODE_ID: 1
+      API_PORT: 8080
       NODO_1: p1
       NODO_2: p2
       NODO_3: p3
@@ -12,12 +13,15 @@ services:
     networks:
       - bully-net
     restart: unless-stopped
+    ports:
+      - 8081:8080
 
   p2:
     build: .
     image: localhost:5000/app:1.0
     environment:
       NODE_ID: 2
+      API_PORT: 8080
       NODO_1: p1
       NODO_2: p2
       NODO_3: p3
@@ -26,12 +30,15 @@ services:
     networks:
       - bully-net
     restart: unless-stopped
+    ports:
+      - 8082:8080
 
   p3:
     build: .
     image: localhost:5000/app:1.0
     environment:
       NODE_ID: 3
+      API_PORT: 8080
       NODO_1: p1
       NODO_2: p2
       NODO_3: p3
@@ -40,12 +47,15 @@ services:
     networks:
       - bully-net
     restart: unless-stopped
+    ports:
+      - 8083:8080
 
   p4:
     build: .
     image: localhost:5000/app:1.0
     environment:
       NODE_ID: 4
+      API_PORT: 8080
       NODO_1: p1
       NODO_2: p2
       NODO_3: p3
@@ -54,12 +64,15 @@ services:
     networks:
       - bully-net
     restart: unless-stopped
+    ports:
+      - 8084:8080
 
   p5:
     build: .
     image: localhost:5000/app:1.0
     environment:
       NODE_ID: 5
+      API_PORT: 8080
       NODO_1: p1
       NODO_2: p2
       NODO_3: p3
@@ -68,6 +81,8 @@ services:
     networks:
       - bully-net
     restart: unless-stopped
+    ports:
+      - 8085:8080
 
 networks:
   bully-net:

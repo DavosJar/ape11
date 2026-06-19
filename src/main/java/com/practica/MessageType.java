@@ -13,6 +13,7 @@ public class MessageType {
     public static final String VOTE_NO = "VOTE:NO";
     public static final String DECISION_SI = "DECISION:SI";
     public static final String DECISION_NO = "DECISION:NO";
+    public static final String VOTE_REPORT = "VOTE_REPORT";
 
     private MessageType() {}
 }

@@ -7,90 +7,72 @@ public class ConsensoManager {
     private final EstadoProceso estado;
     private final Consumer<Message> mensajero;
 
-    // Current round state
-    private int rondaActual = 1;           // 1, 2, 3
+    private int rondaActual = 1;
     private boolean rondaEnCurso;
-    private Map<Integer, String> votosRecibidos;   // proceso → voto recibido por el coordinador
-    private Map<Integer, Map<Integer, String>> reportesVotos; // proceso que reporta → (emisor → voto)
+    private Map<Integer, String> votosRecibidos;
+    private Map<Integer, Map<Integer, String>> reportesVotos;
+    private Map<Integer, String> votosObservados;
     private int votosSI;
     private int votosNO;
     private int totalRespondidos;
 
-    // Byzantine config per round
-    private static final Set<Integer> BIZANTINOS_RONDA_1 = new HashSet<>();  // 0 bizantinos
-    private static final Set<Integer> BIZANTINOS_RONDA_2 = new HashSet<>(Arrays.asList(3)); // 1 bizantino
-    private static final Set<Integer> BIZANTINOS_RONDA_3 = new HashSet<>(Arrays.asList(3, 4)); // 2 bizantinos
+    private Set<Integer> bizantinosActuales = new HashSet<>();
+
+    private Map<String, Object> ultimosResultados;
 
     public ConsensoManager(EstadoProceso estado, Consumer<Message> mensajero) {
         this.estado = estado;
         this.mensajero = mensajero;
     }
 
-    /** Returns the set of Byzantine process IDs for the given round */
-    private Set<Integer> bizantinosEnRonda(int ronda) {
-        switch (ronda) {
-            case 1: return BIZANTINOS_RONDA_1;
-            case 2: return BIZANTINOS_RONDA_2;
-            case 3: return BIZANTINOS_RONDA_3;
-            default: return Collections.emptySet();
-        }
-    }
-
-    /** Whether THIS process is Byzantine in the current round */
     private boolean soyBizantino() {
-        return bizantinosEnRonda(rondaActual).contains(estado.getId());
+        return bizantinosActuales.contains(estado.getId());
     }
 
-    /**
-     * Called by the coordinator to execute all 3 rounds sequentially.
-     * Runs in its own thread.
-     */
-    public void ejecutarTodasLasRondas() {
-        new Thread(() -> {
-            // Wait a bit for stabilization after election
-            try { Thread.sleep(3000); } catch (InterruptedException e) {}
+    public synchronized Map<String, Object> ejecutarRonda(int ronda, Set<Integer> bizantinos) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (!estado.isEsCoordinador()) {
+            result.put("error", "Solo el coordinador puede ejecutar rondas");
+            result.put("coordinator", estado.getCoordinadorActual());
+            return result;
+        }
 
-            for (int ronda = 1; ronda <= 3; ronda++) {
-                System.out.println("\n========== RONDA " + ronda + " ==========");
-                Set<Integer> bizantinos = bizantinosEnRonda(ronda);
-                System.out.println("[" + estado.getId() + "] Bizantinos: " + (bizantinos.isEmpty() ? "ninguno" : bizantinos));
-                ejecutarRonda(ronda);
-                try { Thread.sleep(2000); } catch (InterruptedException e) {}
-            }
-        }).start();
-    }
-
-    /**
-     * Executes a single consensus round (coordinator only).
-     */
-    private void ejecutarRonda(int ronda) {
-        if (!estado.isEsCoordinador()) return;
+        bizantinosActuales = (bizantinos != null) ? new HashSet<>(bizantinos) : new HashSet<>();
 
         rondaActual = ronda;
         rondaEnCurso = true;
         votosRecibidos = new HashMap<>();
         reportesVotos = new HashMap<>();
+        votosObservados = new HashMap<>();
         votosSI = 0;
         votosNO = 0;
         totalRespondidos = 0;
 
+        System.out.println("\n========== RONDA " + ronda + " ==========");
+        System.out.println("[" + estado.getId() + "] Bizantinos: " + (bizantinosActuales.isEmpty() ? "ninguno" : bizantinosActuales));
         System.out.println("[" + estado.getId() + "] Propuesta: APROBAR_TRANSACCION");
         System.out.println("[" + estado.getId() + "] Solicitando votos...");
 
-        // Send VOTE_REQUEST to all other processes (include round number)
         for (int i = 1; i <= estado.getNodos().size(); i++) {
             if (i != estado.getId() && estado.getNodos().containsKey(i)) {
-                mensajero.accept(new Message(MessageType.VOTE_REQUEST, estado.getId(), i, String.valueOf(ronda)));
+                // content format: "ronda:byz1,byz2,..."
+                StringBuilder content = new StringBuilder();
+                content.append(ronda).append(":");
+                boolean firstByz = true;
+                for (int b : bizantinos) {
+                    if (!firstByz) content.append(",");
+                    content.append(b);
+                    firstByz = false;
+                }
+                mensajero.accept(new Message(MessageType.VOTE_REQUEST, estado.getId(), i, content.toString()));
             }
         }
 
-        // Coordinator also votes (honest vote)
         String miVoto = (estado.getId() % 2 == 0) ? MessageType.VOTE_SI : MessageType.VOTE_NO;
         votosRecibidos.put(estado.getId(), miVoto);
         contarVoto(miVoto);
 
-        // Wait for votes (timeout per node: total N-1 * 1000ms)
-        int totalEsperados = estado.getNodos().size(); // including self
+        int totalEsperados = estado.getNodos().size();
         int maxEspera = (totalEsperados - 1) * 1000 + 2000;
         try {
             for (int i = 0; i < maxEspera / 100; i++) {
@@ -103,37 +85,98 @@ public class ConsensoManager {
 
         rondaEnCurso = false;
 
-        // Log all received votes
         System.out.println("[" + estado.getId() + "] Votos recibidos:");
         for (Map.Entry<Integer, String> entry : votosRecibidos.entrySet()) {
             System.out.println("  P" + entry.getKey() + " = " + entry.getValue());
         }
 
-        // Decide by majority
         String decision;
         if (votosSI > votosNO) {
             decision = MessageType.DECISION_SI;
         } else if (votosNO > votosSI) {
             decision = MessageType.DECISION_NO;
         } else {
-            // Tie → coordinator decides SI
             decision = MessageType.DECISION_SI;
         }
 
         System.out.println("[" + estado.getId() + "] Total: SI=" + votosSI + ", NO=" + votosNO);
         System.out.println("[" + estado.getId() + "] Decisión: " + decision);
 
-        // Broadcast decision
         for (int i = 1; i <= estado.getNodos().size(); i++) {
             if (i != estado.getId() && estado.getNodos().containsKey(i)) {
                 enviarMensaje(decision, i);
             }
         }
-
         System.out.println("[" + estado.getId() + "] Decisión enviada a todos");
 
-        // CHECK FOR BYZANTINE INCONSISTENCIES
-        detectarInconsistencias();
+        int reportesEsperados = estado.getNodos().size() - 1;
+        int maxEsperaReportes = 5000;
+        try {
+            for (int i = 0; i < maxEsperaReportes / 100; i++) {
+                if (reportesVotos.size() >= reportesEsperados) break;
+                Thread.sleep(100);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        System.out.println("[" + estado.getId() + "] Reportes recibidos: " + reportesVotos.size() + "/" + reportesEsperados);
+
+        List<Map<String, Object>> inconsistencias = new ArrayList<>();
+        for (Map.Entry<Integer, String> entry : votosRecibidos.entrySet()) {
+            int emisor = entry.getKey();
+            String votoAlCoordinador = entry.getValue();
+            for (Map.Entry<Integer, Map<Integer, String>> reporte : reportesVotos.entrySet()) {
+                int reportero = reporte.getKey();
+                Map<Integer, String> votosVistos = reporte.getValue();
+                String votoReportado = votosVistos.get(emisor);
+                if (votoReportado != null && !votoReportado.equals(votoAlCoordinador)) {
+                    Map<String, Object> inc = new LinkedHashMap<>();
+                    inc.put("emisor", emisor);
+                    inc.put("reportero", reportero);
+                    inc.put("votoAlCoordinador", votoAlCoordinador);
+                    inc.put("votoReportado", votoReportado);
+                    inconsistencias.add(inc);
+                    System.out.println("⚠ INCONSISTENCIA: P" + emisor + " votó " + votoAlCoordinador
+                        + " al coordinador pero P" + reportero + " recibió " + votoReportado);
+                }
+            }
+        }
+
+        if (inconsistencias.isEmpty()) {
+            System.out.println("[" + estado.getId() + "] Sin inconsistencias detectadas");
+        }
+
+        result.put("ronda", ronda);
+        result.put("byzantine", new ArrayList<>(bizantinosActuales));
+        result.put("decision", decision);
+        result.put("totalSI", votosSI);
+        result.put("totalNO", votosNO);
+
+        Map<String, String> votos = new LinkedHashMap<>();
+        for (Map.Entry<Integer, String> entry : votosRecibidos.entrySet()) {
+            votos.put("P" + entry.getKey(), entry.getValue());
+        }
+        result.put("votos", votos);
+
+        Map<String, Map<String, String>> reportes = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Map<Integer, String>> reporte : reportesVotos.entrySet()) {
+            Map<String, String> rep = new LinkedHashMap<>();
+            for (Map.Entry<Integer, String> e : reporte.getValue().entrySet()) {
+                rep.put("P" + e.getKey(), e.getValue());
+            }
+            reportes.put("P" + reporte.getKey(), rep);
+        }
+        result.put("reportes", reportes);
+        result.put("inconsistencias", inconsistencias);
+        result.put("hayInconsistencias", !inconsistencias.isEmpty());
+
+        ultimosResultados = result;
+        return result;
+    }
+
+    public Map<String, Object> getUltimosResultados() {
+        return ultimosResultados;
     }
 
     private void contarVoto(String voto) {
@@ -145,69 +188,41 @@ public class ConsensoManager {
         totalRespondidos++;
     }
 
-    /**
-     * Detects Byzantine inconsistencies by comparing votes received
-     * directly vs votes reported by other processes.
-     */
-    private void detectarInconsistencias() {
-        boolean hayInconsistencia = false;
-
-        for (Map.Entry<Integer, String> entry : votosRecibidos.entrySet()) {
-            int emisor = entry.getKey();
-            String votoAlCoordinador = entry.getValue();
-
-            // Check what other processes reported receiving from this emisor
-            for (Map.Entry<Integer, Map<Integer, String>> reporte : reportesVotos.entrySet()) {
-                int reportero = reporte.getKey();
-                Map<Integer, String> votosVistos = reporte.getValue();
-                String votoReportado = votosVistos.get(emisor);
-
-                if (votoReportado != null && !votoReportado.equals(votoAlCoordinador)) {
-                    System.out.println("⚠ INCONSISTENCIA: P" + emisor + " votó " + votoAlCoordinador
-                        + " al coordinador pero P" + reportero + " recibió " + votoReportado);
-                    hayInconsistencia = true;
-                }
+    public void procesarVOTE_REQUEST(int emisorCoordinador, String contenido) {
+        // Parse format: "ronda:byz1,byz2,..."
+        String[] parts = contenido.split(":", 2);
+        int ronda = Integer.parseInt(parts[0]);
+        Set<Integer> bizantinos = new HashSet<>();
+        if (parts.length > 1 && !parts[1].isEmpty()) {
+            for (String s : parts[1].split(",")) {
+                bizantinos.add(Integer.parseInt(s.trim()));
             }
         }
+        this.bizantinosActuales = bizantinos;
 
-        if (!hayInconsistencia) {
-            System.out.println("[" + estado.getId() + "] Sin inconsistencias detectadas");
-        }
-    }
-
-    /**
-     * Called by ANY process when receiving VOTE_REQUEST from coordinator.
-     * Each process broadcasts its vote to ALL processes (for Byzantine detection).
-     */
-    public void procesarVOTE_REQUEST(int emisorCoordinador, int ronda) {
         this.rondaActual = ronda;
         rondaEnCurso = true;
+        votosObservados = new HashMap<>();
 
         String votoParaCoordinador;
         String votoParaOtros;
 
         if (soyBizantino()) {
-            // Byzantine: says SI to coordinator, NO to everyone else
             votoParaCoordinador = MessageType.VOTE_SI;
             votoParaOtros = MessageType.VOTE_NO;
         } else {
-            // Honest: same vote for everyone
-            boolean voto = (estado.getId() % 2 == 0);  // even = SI, odd = NO
+            boolean voto = (estado.getId() % 2 == 0);
             votoParaCoordinador = voto ? MessageType.VOTE_SI : MessageType.VOTE_NO;
             votoParaOtros = votoParaCoordinador;
         }
 
-        // Send vote to coordinator
         enviarMensaje(votoParaCoordinador, emisorCoordinador);
 
-        // Send vote to ALL other processes (for Byzantine detection)
         int miId = estado.getId();
         for (int i = 1; i <= estado.getNodos().size(); i++) {
             if (i != miId && i != emisorCoordinador && estado.getNodos().containsKey(i)) {
-                // Byzantine: send different vote; Honest: send same vote
                 String voto;
                 if (soyBizantino()) {
-                    // Byzantine sends NO to some, SI to others
                     voto = (i % 2 == 0) ? MessageType.VOTE_SI : MessageType.VOTE_NO;
                 } else {
                     voto = votoParaOtros;
@@ -215,27 +230,52 @@ public class ConsensoManager {
                 enviarMensaje(voto, i);
             }
         }
+
+        new Thread(() -> {
+            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
+            if (votosObservados.isEmpty()) return;
+
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<Integer, String> entry : votosObservados.entrySet()) {
+                if (sb.length() > 0) sb.append(",");
+                sb.append(entry.getKey()).append(":").append(entry.getValue());
+            }
+            mensajero.accept(new Message(MessageType.VOTE_REPORT, miId, emisorCoordinador, sb.toString()));
+            System.out.println("[" + miId + "] Reporte enviado al coordinador: {" + sb + "}");
+        }).start();
     }
 
-    /**
-     * Called by coordinator when receiving a VOTE:SI or VOTE:NO message.
-     */
     public void procesarVOTO(int emisor, String tipo) {
         if (!rondaEnCurso) return;
-
-        System.out.println("[" + estado.getId() + "] voto: P" + emisor + " = " + tipo);
-
         if (estado.isEsCoordinador()) {
             if (!votosRecibidos.containsKey(emisor)) {
                 votosRecibidos.put(emisor, tipo);
                 contarVoto(tipo);
+                System.out.println("[" + estado.getId() + "] voto: P" + emisor + " = " + tipo);
             }
+        } else {
+            votosObservados.put(emisor, tipo);
+            System.out.println("[" + estado.getId() + "] voto observado: P" + emisor + " = " + tipo);
         }
     }
 
-    /**
-     * Called by any process when receiving a DECISION:SI or DECISION:NO
-     */
+    public void procesarVOTE_REPORT(int reportero, String contenido) {
+        if (!estado.isEsCoordinador()) return;
+        Map<Integer, String> votosVistos = new HashMap<>();
+        if (contenido != null && !contenido.isEmpty()) {
+            for (String entry : contenido.split(",")) {
+                String[] parts = entry.split(":", 2);
+                if (parts.length == 2) {
+                    try {
+                        votosVistos.put(Integer.parseInt(parts[0]), parts[1]);
+                    } catch (NumberFormatException e) { }
+                }
+            }
+        }
+        reportesVotos.put(reportero, votosVistos);
+        System.out.println("[" + estado.getId() + "] Reporte recibido de P" + reportero + ": " + contenido);
+    }
+
     public void procesarDECISION(int emisor, String decision) {
         System.out.println("[" + estado.getId() + "] Decisión final de la ronda: " + decision);
         rondaEnCurso = false;
