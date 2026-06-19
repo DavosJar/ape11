@@ -4,16 +4,9 @@ services:
     deploy:
       mode: global
     ports:
-      - 9000:9000
-    volumes:
-      - /etc/hosts:/etc/hosts:ro
+      - 8080:8080
     environment:
       - NODE_HOSTNAME={{.Node.Hostname}}
-      - NODO_1=${NODO_1}
-      - NODO_2=${NODO_2}
-      - NODO_3=${NODO_3}
-      - NODO_4=${NODO_4}
-      - NODO_5=${NODO_5}
     networks:
       - bully-net
 
